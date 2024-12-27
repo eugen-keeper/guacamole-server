@@ -40,7 +40,8 @@ struct guac_stream {
      * Arbitrary data associated with this stream.
      */
     void* data;
-
+    void* exdata;
+    
     /**
      * Handler for ack events sent by the Guacamole web-client.
      *

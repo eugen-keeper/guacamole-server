@@ -34,6 +34,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct sftp_debug {
+    int64_t size;
+    int64_t last_fragment_size;
+    time_t last_fragment_start_time;
+} sftp_debug;
+
 int guac_common_ssh_sftp_normalize_path(char* fullpath,
         const char* path) {
 
@@ -317,6 +323,39 @@ static int guac_common_ssh_sftp_blob_handler(guac_user* user,
         guac_protocol_send_ack(user->socket, stream, "SFTP: OK",
                 GUAC_PROTOCOL_STATUS_SUCCESS);
         guac_socket_flush(user->socket);
+
+        if (stream->exdata != NULL) {
+            sftp_debug *exdata = (sftp_debug*)stream->exdata;
+            exdata->size += length;
+            if (exdata->size == length) {
+                exdata->last_fragment_start_time = time(NULL);
+                
+                struct tm temp_tm = {0};
+                char started_buf[32];
+                strftime(started_buf, sizeof(started_buf), "%Y-%m-%d %H:%M:%S", gmtime_r(&exdata->last_fragment_start_time, &temp_tm));
+                guac_user_log(user, GUAC_LOG_INFO, ">>> Started uploading at: %s", started_buf);
+
+            } else {
+                if (exdata->last_fragment_size + 1000000000 < exdata->size) {
+                    int64_t diff = exdata->size - exdata->last_fragment_size;
+                    time_t now = time(NULL);
+
+                    struct tm temp_tm = {0};
+
+                    char started_buf[32];
+                    strftime(started_buf, sizeof(started_buf), "%Y-%m-%d %H:%M:%S", gmtime_r(&exdata->last_fragment_start_time, &temp_tm));
+
+                    char finished_buf[32];
+                    strftime(finished_buf, sizeof(finished_buf), "%Y-%m-%d %H:%M:%S", gmtime_r(&now, &temp_tm));
+
+                    guac_user_log(user, GUAC_LOG_INFO, ">>> Uploaded: %lld (b); started: %s: finished: %s; spent: %d (s); overall uploaded: %lld (b)",
+                        diff, started_buf, finished_buf, now - exdata->last_fragment_start_time, exdata->size);
+
+                    exdata->last_fragment_start_time = now;
+                    exdata->last_fragment_size = exdata->size;
+                }
+            }
+        }
     }
 
     /* Inform of any errors */
@@ -364,6 +403,27 @@ static int guac_common_ssh_sftp_end_handler(guac_user* user,
         guac_protocol_send_ack(user->socket, stream, "SFTP: Close failed",
                 GUAC_PROTOCOL_STATUS_SERVER_ERROR);
         guac_socket_flush(user->socket);
+    }
+
+    if (stream->exdata) {
+        sftp_debug *exdata = (sftp_debug*)stream->exdata;
+        if (exdata->last_fragment_size != exdata->size) {    
+            int64_t diff = exdata->size - exdata->last_fragment_size;
+            time_t now = time(NULL);
+
+            struct tm temp_tm = {0};
+
+            char started_buf[32];
+            strftime(started_buf, sizeof(started_buf), "%Y-%m-%d %H:%M:%S", gmtime_r(&exdata->last_fragment_start_time, &temp_tm));
+
+            char finished_buf[32];
+            strftime(finished_buf, sizeof(finished_buf), "%Y-%m-%d %H:%M:%S", gmtime_r(&now, &temp_tm));
+
+            guac_user_log(user, GUAC_LOG_INFO, ">>> Uploaded: %lld (b); started: %s: finished: %s; spent: %d (s); overall uploaded: %lld (b)",
+                diff, started_buf, finished_buf, now - exdata->last_fragment_start_time, exdata->size);
+        }
+        guac_user_log(user, GUAC_LOG_INFO, ">>> Finished uploading");
+        guac_mem_free(stream->exdata);
     }
 
     return 0;
@@ -436,6 +496,10 @@ int guac_common_ssh_sftp_handle_file_stream(
 
     /* Store file within stream */
     stream->data = file;
+
+    stream->exdata = guac_mem_alloc(sizeof(sftp_debug));
+    memset(stream->exdata, 0, sizeof(sftp_debug));
+
     return 0;
 
 }
